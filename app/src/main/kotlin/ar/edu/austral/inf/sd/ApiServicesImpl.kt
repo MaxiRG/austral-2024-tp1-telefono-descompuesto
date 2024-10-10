@@ -39,10 +39,10 @@ class ApiServicesImpl: RegisterNodeApiService, RelayApiService, PlayApiService {
 
     override fun registerNode(host: String?, port: Int?, name: String?): RegisterResponse {
 
-        val nextNode = if (nodes.isEmpty()) {
+        val nextNode: RegisterResponse = if (nodes.isEmpty()) {
             // es el primer nodo
             val me = RegisterResponse(currentRequest.serverName, myServerPort, "", "")
-            nodes.add(me)
+            nodes.add(me) //Se pone a si mismo como primer nodo para recibir el último mensaje.
             me
         } else {
             nodes.last()
