@@ -43,6 +43,7 @@ dependencies {
     implementation("io.swagger.core.v3:swagger-models:2.1.10")
 
     implementation("org.springframework:spring-web:6.1.12")
+    implementation("org.springframework.boot:spring-boot-starter-webflux")
 
     testImplementation("io.kotlintest:kotlintest-runner-junit5:3.4.2")
 

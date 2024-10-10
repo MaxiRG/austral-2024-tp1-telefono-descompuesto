@@ -6,17 +6,27 @@ import ar.edu.austral.inf.sd.server.api.RelayApiService
 import ar.edu.austral.inf.sd.server.api.BadRequestException
 import ar.edu.austral.inf.sd.server.api.ReconfigureApiService
 import ar.edu.austral.inf.sd.server.api.UnregisterNodeApiService
+import ar.edu.austral.inf.sd.server.model.HttpResponse
 import ar.edu.austral.inf.sd.server.model.PlayResponse
+import ar.edu.austral.inf.sd.server.model.RegisterRequest
 import ar.edu.austral.inf.sd.server.model.RegisterResponse
+import ar.edu.austral.inf.sd.server.model.RegisterResponseWrapper
 import ar.edu.austral.inf.sd.server.model.Signature
 import ar.edu.austral.inf.sd.server.model.Signatures
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
+import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.beans.factory.annotation.Value
+import org.springframework.http.HttpStatus
+import org.springframework.http.ResponseEntity
 import org.springframework.stereotype.Component
+import org.springframework.web.client.RestTemplate
 import org.springframework.web.context.request.RequestContextHolder
 import org.springframework.web.context.request.ServletRequestAttributes
+import org.springframework.web.reactive.function.client.WebClient
+import org.springframework.web.reactive.function.client.awaitBody
+import org.springframework.web.server.ResponseStatusException
 import java.security.MessageDigest
 import java.util.*
 import java.util.concurrent.CountDownLatch
@@ -41,21 +51,42 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
     private var currentMessageWaiting = MutableStateFlow<PlayResponse?>(null)
     private var currentMessageResponse = MutableStateFlow<PlayResponse?>(null)
     private var xGameTimestamp: Int = 0
+    private var timeoutInSeconds : Int = 0
+    private val myUuid = UUID.randomUUID()
 
-    override fun registerNode(host: String?, port: Int?, uuid: UUID?, salt: String?, name: String?): RegisterResponse {
+    override fun registerNode(host: String?, port: Int?, uuid: UUID?, salt: String?, name: String?): RegisterResponseWrapper {
 
-        val nextNode: RegisterResponse = if (nodes.isEmpty()) {
+        // Si hay un dato vacio, devolver 400
+        if (host == null || port == null || uuid == null || salt == null || name == null) {
+            throw BadRequestException("Invalid request")
+        }
+        // Si el UUID ya existe, pero la clave privada es distinta, devolver 401 (Unauthorized)
+        if (nodes.any { it.uuid == uuid && it.salt != salt }) {
+            throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "UUID already exists but the salt does not match")
+        }
+
+        // Si el UUID ya existe y la clave privada es la misma, devolver 202
+        if (nodes.any { it.uuid == uuid && it.salt == salt }) {
+            val existingNode = nodes.find { it.uuid == uuid }
+            val registerResponse: RegisterResponse =  RegisterResponse(existingNode!!.nextHost, existingNode.nextPort, existingNode.uuid, existingNode.salt, timeoutInSeconds, existingNode.xGameTimestamp)
+            val httpResponse = HttpResponse(202, "UUID already exists and salt matches.")
+            return RegisterResponseWrapper(registerResponse, httpResponse)
+        }
+
+
+        val nextNode = if (nodes.isEmpty()) {
             // es el primer nodo
-            val me = RegisterResponse(currentRequest.serverName, myServerPort, "", "")
-            nodes.add(me) //Se pone a si mismo como primer nodo para recibir el último mensaje.
+            val me = RegisterResponse(currentRequest.serverName, myServerPort, uuid, salt, timeoutInSeconds, xGameTimestamp)
+            nodes.add(me)
             me
         } else {
             nodes.last()
         }
-        val node = RegisterResponse(host!!, port!!, uuid, salt)
+        val node = RegisterResponse(currentRequest.serverName, myServerPort, uuid, salt, timeoutInSeconds, xGameTimestamp)
         nodes.add(node)
 
-        return RegisterResponse(nextNode.nextHost, nextNode.nextPort, uuid, newSalt())
+        val registerResponse: RegisterResponse = RegisterResponse(nextNode.nextHost, nextNode.nextPort, nextNode.uuid, nextNode.salt, timeoutInSeconds, xGameTimestamp)
+        return RegisterResponseWrapper(registerResponse, HttpResponse(200, "success"))
     }
 
     override fun relayMessage(message: String, signatures: Signatures, xGameTimestamp: Int?): Signature {
@@ -89,8 +120,10 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
 
     override fun sendMessage(body: String): PlayResponse {
         if (nodes.isEmpty()) {
+            if(timeoutInSeconds == 0) timeoutInSeconds = 5
+
             // inicializamos el primer nodo como yo mismo
-            val me = RegisterResponse(currentRequest.serverName, myServerPort, "", "")
+            val me = RegisterResponse(currentRequest.serverName, myServerPort, myUuid, salt, timeoutInSeconds, xGameTimestamp)
             nodes.add(me)
         }
         currentMessageWaiting.update { newResponse(body) }
@@ -112,14 +145,23 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
         nextPort: Int?,
         xGameTimestamp: Int?
     ): String {
+        if(uuid == this.)
         TODO("Not yet implemented")
     }
 
-    internal fun registerToServer(registerHost: String, registerPort: Int) {
-        // @ToDo acá tienen que trabajar ustedes
-        val registerNodeResponse: RegisterResponse = RegisterResponse("", -1, "", "")
+    internal suspend fun registerToServer(registerHost: String, registerPort: Int) {
+        var client = WebClient.builder()
+            .baseUrl("$registerHost:$registerPort")  // Replace with your API base URL
+            .defaultHeader("Content-Type", "application/json")
+            .build()
+
+        val registerNodeResponse: RegisterResponse = client.post().uri("/register-node").bodyValue(RegisterRequest(myServerName, myServerPort, salt, myUuid)).retrieve().awaitBody()
+
         println("nextNode = ${registerNodeResponse}")
-        nextNode = with(registerNodeResponse) { RegisterResponse(nextHost, nextPort, uuid, hash) }
+        nextNode = with(registerNodeResponse) { RegisterResponse(nextHost, nextPort, uuid, salt, timeoutInSeconds, xGameTimestamp) }
+        timeoutInSeconds = nextNode!!.timeout
+        xGameTimestamp = nextNode!!.xGameTimestamp
+
     }
 
     private fun sendRelayMessage(

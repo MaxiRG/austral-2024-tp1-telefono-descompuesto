@@ -11,6 +11,7 @@ import jakarta.validation.constraints.NotNull
 import jakarta.validation.constraints.Pattern
 import jakarta.validation.constraints.Size
 import jakarta.validation.Valid
+import java.util.UUID
 
 /**
  * 
@@ -24,7 +25,10 @@ data class RegisterRequest(
 
     @get:JsonProperty("port", required = true) val port: kotlin.Int,
 
-    @get:JsonProperty("name", required = true) val name: kotlin.String
+    @get:JsonProperty("name", required = true) val name: kotlin.String,
+
+    @get:JsonProperty("uuid", required = true) val uuid : UUID
+
     ) {
 
 }
