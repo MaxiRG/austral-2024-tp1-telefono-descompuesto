@@ -30,7 +30,7 @@ data class RegisterResponse(
     @get:JsonProperty("salt", required = true) val salt: String,
 
     @get:Min(0)
-    @get:JsonProperty("timeout", required = true) val timeout: kotlin.Int,
+    @get:JsonProperty("timeout", required = true) val timeout: kotlin.Long,
 
     @get:Min(0)
     @get:JsonProperty("xGameTimestamp", required = true) val xGameTimestamp: kotlin.Int
