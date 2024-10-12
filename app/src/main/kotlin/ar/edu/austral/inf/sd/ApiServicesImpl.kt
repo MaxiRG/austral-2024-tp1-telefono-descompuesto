@@ -8,7 +8,6 @@ import ar.edu.austral.inf.sd.server.api.ReconfigureApiService
 import ar.edu.austral.inf.sd.server.api.UnregisterNodeApiService
 import ar.edu.austral.inf.sd.server.model.HttpResponse
 import ar.edu.austral.inf.sd.server.model.PlayResponse
-import ar.edu.austral.inf.sd.server.model.RegisterRequest
 import ar.edu.austral.inf.sd.server.model.RegisterResponse
 import ar.edu.austral.inf.sd.server.model.RegisterResponseWrapper
 import ar.edu.austral.inf.sd.server.model.Signature
@@ -27,7 +26,6 @@ import org.springframework.http.ResponseEntity
 import org.springframework.stereotype.Component
 import org.springframework.util.LinkedMultiValueMap
 import org.springframework.util.MultiValueMap
-import org.springframework.web.client.HttpServerErrorException.InternalServerError
 import org.springframework.web.context.request.RequestContextHolder
 import org.springframework.web.context.request.ServletRequestAttributes
 import org.springframework.web.reactive.function.BodyInserters
@@ -59,7 +57,7 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
     private var currentMessageWaiting = MutableStateFlow<PlayResponse?>(null)
     private var currentMessageResponse = MutableStateFlow<PlayResponse?>(null)
     private var xGameTimestamp: Int = 0
-    private var timeoutInSeconds : Long = 0
+    private var timeoutInSeconds : Long = 5
     private val myUuid = UUID.randomUUID()
     private val scope = CoroutineScope(Dispatchers.Default)
 
@@ -77,7 +75,7 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
         // Si el UUID ya existe y la clave privada es la misma, devolver 202
         if (nodes.any { it.uuid == uuid && it.salt == salt }) {
             val existingNode = nodes.find { it.uuid == uuid }
-            val registerResponse: RegisterResponse =  RegisterResponse(existingNode!!.nextHost, existingNode.nextPort, existingNode.uuid, existingNode.salt, timeoutInSeconds, existingNode.xGameTimestamp)
+            val registerResponse =  RegisterResponse(existingNode!!.nextHost, existingNode.nextPort, existingNode.uuid, existingNode.salt, timeoutInSeconds, existingNode.xGameTimestamp)
             val httpResponse = HttpResponse(202, "UUID already exists and salt matches.")
             return RegisterResponseWrapper(registerResponse, httpResponse)
         }
@@ -85,21 +83,21 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
 
         val nextNode = if (nodes.isEmpty()) {
             // es el primer nodo
-            val me = RegisterResponse(currentRequest.serverName, myServerPort, uuid, salt, timeoutInSeconds, xGameTimestamp)
+            val me = RegisterResponse(currentRequest.serverName, myServerPort, myUuid, this.salt, timeoutInSeconds, xGameTimestamp)
             nodes.add(me)
             me
         } else {
             nodes.last()
         }
-        val node = RegisterResponse(currentRequest.serverName, myServerPort, uuid, salt, timeoutInSeconds, xGameTimestamp)
+        val node = RegisterResponse(currentRequest.serverName, port, uuid, salt, timeoutInSeconds, xGameTimestamp)
         nodes.add(node)
 
-        val registerResponse: RegisterResponse = RegisterResponse(nextNode.nextHost, nextNode.nextPort, nextNode.uuid, nextNode.salt, timeoutInSeconds, xGameTimestamp)
+        val registerResponse = RegisterResponse(nextNode.nextHost, nextNode.nextPort, nextNode.uuid, nextNode.salt, timeoutInSeconds, xGameTimestamp)
         return RegisterResponseWrapper(registerResponse, HttpResponse(200, "success"))
     }
 
     override fun relayMessage(message: String, signatures: Signatures, xGameTimestamp: Int?): Signature {
-        val receivedHash = doHash(message.encodeToByteArray(), salt)
+        val receivedHash: String = doHash(message.encodeToByteArray(), salt)
         val receivedContentType = currentRequest.getPart("message")?.contentType ?: "nada"
         val receivedLength = message.length
         if (nextNode != null) {
@@ -118,11 +116,12 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
             }
         } else {
             // me llego algo, no lo tengo que pasar.
-            // Aca se define la respuesta al /play. Faltan aclarar las de que pasa en cada caso.
             if (currentMessageWaiting.value == null) throw BadRequestException("no waiting message")
             val current = currentMessageWaiting.getAndUpdate { null }!!
+            checkMessageArrived(receivedHash, current)
+            checkSignaturesArrived(signatures, message)
             val response = current.copy(
-                contentResult = if (receivedHash == current.originalHash) "Success" else "Failure",
+                contentResult = "Success",
                 receivedHash = receivedHash,
                 receivedLength = receivedLength,
                 receivedContentType = receivedContentType,
@@ -137,6 +136,25 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
             contentType = receivedContentType,
             contentLength = receivedLength
         )
+    }
+
+    private fun checkMessageArrived(receivedHash: String, current: PlayResponse) {
+        if (receivedHash != current.originalHash ) {
+            throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Message did not arrive correctly")
+        }
+    }
+
+    private fun checkSignaturesArrived(
+        signatures: Signatures,
+        message : String
+    ) {
+        val expectedSignatures: List<String> = nodes.map { playerSign(message, it) }
+        val orderedExpectedSignatures: List<String> = listOf(expectedSignatures.first()) + expectedSignatures.drop(1).reversed()
+        val actualSignatures = signatures.items.map { it.hash }
+        val allSignaturesArrivedCorrectly = orderedExpectedSignatures == actualSignatures
+        if (!allSignaturesArrivedCorrectly) {
+            throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Signatures did not arrive correctly.")
+        }
     }
 
     override fun sendMessage(body: String): PlayResponse {
@@ -189,11 +207,23 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
 
     internal suspend fun registerToServer(registerHost: String, registerPort: Int) {
         val client = WebClient.builder()
-            .baseUrl("$registerHost:$registerPort")  // Replace with your API base URL
+            .baseUrl("http://${registerHost}:${registerPort}")  // Replace with your API base URL
             .defaultHeader("Content-Type", "application/json")
             .build()
 
-        val registerNodeResponse: RegisterResponse = client.post().uri("/register-node").bodyValue(RegisterRequest(myServerName, myServerPort, salt, myUuid)).retrieve().awaitBody()
+        val registerNodeResponse: RegisterResponse = client.post()
+            .uri { builder ->
+                builder.path("/register-node")
+                    .queryParam("host", myServerName)
+                    .queryParam("port", myServerPort)
+                    .queryParam("uuid", myUuid)
+                    .queryParam("salt", salt)
+                    .queryParam("name", myServerName)
+                    .build()
+            }
+            .retrieve()
+            .awaitBody()
+
 
         println("nextNode = ${registerNodeResponse}")
         nextNode = with(registerNodeResponse) { RegisterResponse(nextHost, nextPort, uuid, salt, timeoutInSeconds, xGameTimestamp) }
@@ -210,12 +240,11 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
     ): ResponseEntity<Void>? {
         val url = "http://${relayNode.nextHost}:${relayNode.nextPort}"
         try {
-            val newHash = doHash(body.encodeToByteArray(), salt)
-            val newSignatures = signatures.items + Signature(myServerName, newHash , contentType, body.length )
+            val newSignatures = Signatures(signatures.items + clientSign(body, salt))
 
             val multipartData: MultiValueMap<String, Any> = LinkedMultiValueMap()
-            multipartData.add("message", BodyInserters.fromValue(body))
-            multipartData.add("signatures", BodyInserters.fromValue(newSignatures))
+            multipartData.add("message", body)
+            multipartData.add("signatures", newSignatures)
 
             return WebClient.builder().baseUrl(url)
                 .build()
@@ -231,7 +260,7 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
                 .toBodilessEntity()
                 .block()
         } catch (e: Exception) {
-            // Handle any exceptions as needed
+//             Handle any exceptions as needed
             throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Something went wrong sending relay message.")
         }
     }
@@ -239,6 +268,20 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
     private fun clientSign(message: String, contentType: String): Signature {
         val receivedHash = doHash(message.encodeToByteArray(), salt)
         return Signature(myServerName, receivedHash, contentType, message.length)
+    }
+
+    private fun playerSign(message: String, node: RegisterResponse): String {
+        val saltBytes = Base64.getDecoder().decode(node.salt)
+
+        // Update the message digest with the salt
+        messageDigest.update(saltBytes)
+
+
+        // Compute the hash of the body
+        val computedHash = messageDigest.digest(message.encodeToByteArray())
+
+        // Encode the computed hash to Base64
+        return Base64.getEncoder().encodeToString(computedHash)
     }
 
     private fun newResponse(body: String) = PlayResponse(

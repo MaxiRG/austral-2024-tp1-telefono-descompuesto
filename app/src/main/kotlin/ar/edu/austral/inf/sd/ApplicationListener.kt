@@ -17,7 +17,7 @@ class ApplicationListener {
     var registerPort: Int = -1
 
     @EventListener(ApplicationReadyEvent::class)
-    fun onApplicationReady(event: ApplicationReadyEvent) {
+    suspend fun onApplicationReady(event: ApplicationReadyEvent) {
         //
         if (registerHost != "" && registerPort != -1) {
             println("me voy a registrar en el server $registerHost:$registerPort")
