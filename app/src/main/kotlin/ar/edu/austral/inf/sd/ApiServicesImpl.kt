@@ -158,9 +158,8 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
     }
 
     override fun sendMessage(body: String): PlayResponse {
+        if(timeoutInSeconds == 0.toLong()) timeoutInSeconds = 5
         if (nodes.isEmpty()) {
-            if(timeoutInSeconds == 0.toLong()) timeoutInSeconds = 5
-
             // inicializamos el primer nodo como yo mismo
             val me = RegisterResponse(currentRequest.serverName, myServerPort, myUuid, salt, timeoutInSeconds, xGameTimestamp)
             nodes.add(me)
@@ -173,10 +172,12 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
             throw ResponseStatusException(HttpStatus.GATEWAY_TIMEOUT, "Gateway Timeout")
         }
         resultReady = CountDownLatch(1)
+        xGameTimestamp++
         return currentMessageResponse.value!!
     }
 
     override suspend fun unregisterNode(uuid: UUID?, salt: String?): String {
+        val successMessage = "Unregister successful!"
         val nodeToUnregister: RegisterResponse? = nodes.find { it.uuid == uuid && it.salt == salt }
         if(nodeToUnregister == null) {
             throw BadRequestException("uuid or salt incorrect")
@@ -187,7 +188,7 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
 
         if(nodeToReconfigure == null) {
             nodes.removeLast()
-            return "Unregister successful!"
+            return successMessage
         } else {
             nodes.removeAt(indexOfUnregister)
 
@@ -211,7 +212,7 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
                 .retrieve()
                 .awaitBody()
 
-            return reconfigureNodeResponse
+            return successMessage
 
         }
     }
