@@ -60,6 +60,10 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
     private var timeoutInSeconds : Long = 5
     private val myUuid = UUID.randomUUID()
     private val scope = CoroutineScope(Dispatchers.Default)
+    private var coordinatorHost = ""
+    private var coordinatorPort = -1
+    private var messageArrived = true
+    private var signaturesArrived = true
 
     override fun registerNode(host: String?, port: Int?, uuid: UUID?, salt: String?, name: String?): RegisterResponseWrapper {
 
@@ -101,26 +105,25 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
         val receivedContentType = currentRequest.getPart("message")?.contentType ?: "nada"
         val receivedLength = message.length
         if (nextNode != null) {
-            if(xGameTimestamp != this.xGameTimestamp) {
+            if(xGameTimestamp == null ||xGameTimestamp < this.xGameTimestamp) {
                 throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Wrong X-Game-Timestamp.")
+            } else {
+                this.xGameTimestamp = xGameTimestamp
             }
-            try{
-                val response = sendRelayMessage(message, receivedContentType, nextNode!!, signatures)
-                if (response != null) {
-                    if(response.statusCode != HttpStatus.OK) {
-                        throw ResponseStatusException(HttpStatus.ACCEPTED, "Accepted and sent to next, but next didnt return 200")
-                    }
-                }
-            } catch (e: Exception) {
-                throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "Something went wrong sending relay message.")
+            val success : Boolean = retrySendRelay(message, receivedContentType, signatures, 1)
+            if(!success) {
+                println("Relay failed, returning message to coordinator.")
+                println(coordinatorHost)
+                println(coordinatorPort)
+                sendRelayMessage(message, receivedContentType, coordinatorHost, coordinatorPort, signatures)
             }
         } else {
             // me llego algo, no lo tengo que pasar.
             if (currentMessageWaiting.value == null) throw BadRequestException("no waiting message")
             val current = currentMessageWaiting.getAndUpdate { null }!!
-            checkMessageArrived(receivedHash, current)
-            checkSignaturesArrived(signatures, message)
-            val response = current.copy(
+            messageArrived = checkMessageArrived(receivedHash, current)
+            signaturesArrived = checkSignaturesArrived(signatures, message)
+            val response: PlayResponse = current.copy(
                 contentResult = "Success",
                 receivedHash = receivedHash,
                 receivedLength = receivedLength,
@@ -138,23 +141,57 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
         )
     }
 
-    private fun checkMessageArrived(receivedHash: String, current: PlayResponse) {
+
+    private fun retrySendRelay(
+        message: String,
+        receivedContentType: String,
+        signatures: Signatures,
+        times : Int
+    ):Boolean {
+        var counter = times
+        while (counter > 0) {
+            try {
+                if(nextNode != null){
+                    val response = sendRelayMessage(message, receivedContentType, nextNode!!.nextHost, nextNode!!.nextPort, signatures)
+                    if (response != null) {
+                        if (response.statusCode == HttpStatus.OK) {
+
+                            return true
+                        } else {
+                            counter--
+                        }
+                    } else {
+                        return false
+                    }
+                } else {
+                    return false
+                }
+            } catch (e: Exception) {
+                counter--
+            }
+        }
+        return false
+    }
+
+    private fun checkMessageArrived(receivedHash: String, current: PlayResponse) : Boolean {
         if (receivedHash != current.originalHash ) {
-            throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Message did not arrive correctly")
+            return false
+        } else {
+            return true
         }
     }
 
     private fun checkSignaturesArrived(
         signatures: Signatures,
         message : String
-    ) {
+    ) : Boolean {
         val expectedSignatures: List<String> = nodes.map { playerSign(message, it) }
         val orderedExpectedSignatures: List<String> = listOf(expectedSignatures.first()) + expectedSignatures.drop(1).reversed()
         val actualSignatures = signatures.items.map { it.hash }
         val allSignaturesArrivedCorrectly = orderedExpectedSignatures == actualSignatures
         if (!allSignaturesArrivedCorrectly) {
-            throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Signatures did not arrive correctly.")
-        }
+            return false
+        } else { return true}
     }
 
     override fun sendMessage(body: String): PlayResponse {
@@ -166,13 +203,22 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
         }
         currentMessageWaiting.update { newResponse(body) }
         val contentType = currentRequest.contentType
-        sendRelayMessage(body, contentType, nodes.last(), Signatures(listOf()))
+        sendRelayMessage(body, contentType, nodes.last().nextHost, nodes.last().nextPort, Signatures(listOf()))
         if(!resultReady.await(timeoutInSeconds, TimeUnit.SECONDS)) { //Aca definimos cuanto tarda en hacer time-out el play.
             resultReady = CountDownLatch(1)
             throw ResponseStatusException(HttpStatus.GATEWAY_TIMEOUT, "Gateway Timeout")
         }
         resultReady = CountDownLatch(1)
         xGameTimestamp++
+        if(!messageArrived) {
+            messageArrived = true
+            signaturesArrived = true
+            throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Message did not arrive correctly")
+        }
+        if(!signaturesArrived) {
+            signaturesArrived = true
+            throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Signatures did not arrive correctly.")
+        }
         return currentMessageResponse.value!!
     }
 
@@ -266,18 +312,21 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
         nextNode = with(registerNodeResponse) { RegisterResponse(nextHost, nextPort, uuid, salt, timeoutInSeconds, xGameTimestamp) }
         timeoutInSeconds = nextNode!!.timeout
         xGameTimestamp = nextNode!!.xGameTimestamp
+        coordinatorHost = registerHost
+        coordinatorPort = registerPort
 
     }
 
     private fun sendRelayMessage(
         body: String,
         contentType: String,
-        relayNode: RegisterResponse,
+        host : String,
+        port : Int,
         signatures: Signatures
     ): ResponseEntity<Void>? {
-        val url = "http://${relayNode.nextHost}:${relayNode.nextPort}"
+        val url = "http://${host}:${port}"
         try {
-            val newSignatures = Signatures(signatures.items + clientSign(body, salt))
+            val newSignatures = Signatures(signatures.items + clientSign(body, contentType))
 
             val multipartData: MultiValueMap<String, Any> = LinkedMultiValueMap()
             multipartData.add("message", body)
@@ -301,6 +350,9 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
             throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Something went wrong sending relay message.")
         }
     }
+
+
+
 
     private fun clientSign(message: String, contentType: String): Signature {
         val receivedHash = doHash(message.encodeToByteArray(), salt)
