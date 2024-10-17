@@ -1,7 +1,5 @@
 package ar.edu.austral.inf.sd.server.api
 
-import ar.edu.austral.inf.sd.server.model.Signature
-import ar.edu.austral.inf.sd.server.model.Signatures
 import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
@@ -27,16 +25,15 @@ import kotlin.collections.Map
 @RestController
 @Validated
 @RequestMapping("\${api.base-path:}")
-class RelayApiController(@Autowired(required = true) val service: RelayApiService) {
+class ReconfigureApiController(@Autowired(required = true) val service: ReconfigureApiService) {
 
 
     @RequestMapping(
         method = [RequestMethod.POST],
-        value = ["/relay"],
-        produces = ["application/json"],
-        consumes = ["multipart/form-data"]
+        value = ["/reconfigure"],
+        produces = ["application/json"]
     )
-    fun relayMessage( @RequestParam(value = "message", required = true) message: kotlin.String , @RequestPart(value = "signatures", required = true) signatures: Signatures , @RequestHeader(value = "X-Game-Timestamp", required = false) xGameTimestamp: kotlin.Int?): ResponseEntity<Signature> {
-        return ResponseEntity(service.relayMessage(message, signatures, xGameTimestamp), HttpStatus.valueOf(200))
+    fun reconfigure( @Valid @RequestParam(value = "uuid", required = false) uuid: java.util.UUID?, @Valid @RequestParam(value = "salt", required = false) salt: kotlin.String?, @Valid @RequestParam(value = "nextHost", required = false) nextHost: kotlin.String?, @Valid @RequestParam(value = "nextPort", required = false) nextPort: kotlin.Int?, @RequestHeader(value = "X-Game-Timestamp", required = false) xGameTimestamp: kotlin.Int?): ResponseEntity<kotlin.String> {
+        return ResponseEntity(service.reconfigure(uuid, salt, nextHost, nextPort, xGameTimestamp), HttpStatus.valueOf(200))
     }
 }
