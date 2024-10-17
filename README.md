@@ -97,3 +97,19 @@ Las entregas son individuales: me envían el código fuente del proyecto con el 
 Las pruebas se van a hacer en clase probando el sistema entre todos los alumnos que hayan entregado. 
 
 Saludos.
+
+
+### Para correr
+```
+gradle wrapper
+```
+Nodo coordinador:
+```
+./gradlew bootRun --args='--spring.profiles.active=test1'
+```
+
+Nodos participantes:
+```
+./gradlew bootRun --args='--spring.profiles.active=test2'
+./gradlew bootRun --args='--spring.profiles.active=test3'
+```
