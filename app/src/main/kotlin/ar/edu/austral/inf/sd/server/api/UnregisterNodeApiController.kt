@@ -33,7 +33,7 @@ class UnregisterNodeApiController(@Autowired(required = true) val service: Unreg
         value = ["/unregister-node"],
         produces = ["application/json"]
     )
-    fun unregisterNode( @Valid @RequestParam(value = "uuid", required = false) uuid: java.util.UUID?, @Valid @RequestParam(value = "salt", required = false) salt: kotlin.String?): ResponseEntity<kotlin.String> {
+    suspend fun unregisterNode(@Valid @RequestParam(value = "uuid", required = false) uuid: java.util.UUID?, @Valid @RequestParam(value = "salt", required = false) salt: kotlin.String?): ResponseEntity<kotlin.String> {
         return ResponseEntity(service.unregisterNode(uuid, salt), HttpStatus.valueOf(202))
     }
 }

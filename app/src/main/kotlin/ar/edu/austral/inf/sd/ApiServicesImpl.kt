@@ -176,8 +176,44 @@ class ApiServicesImpl : RegisterNodeApiService, RelayApiService, PlayApiService,
         return currentMessageResponse.value!!
     }
 
-    override fun unregisterNode(uuid: UUID?, salt: String?): String {
-        TODO("Not yet implemented")
+    override suspend fun unregisterNode(uuid: UUID?, salt: String?): String {
+        val nodeToUnregister: RegisterResponse? = nodes.find { it.uuid == uuid && it.salt == salt }
+        if(nodeToUnregister == null) {
+            throw BadRequestException("uuid or salt incorrect")
+        }
+
+        val indexOfUnregister: Int = nodes.indexOf(nodeToUnregister)
+        val nodeToReconfigure = nodes.getOrNull(indexOfUnregister+1)
+
+        if(nodeToReconfigure == null) {
+            nodes.removeLast()
+            return "Unregister successful!"
+        } else {
+            nodes.removeAt(indexOfUnregister)
+
+            val newNextNode = nodes.getOrNull(indexOfUnregister - 1) ?: throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "No next node to reconfigure to")
+
+            val client = WebClient.builder()
+                .baseUrl("http://${nodeToReconfigure.nextHost}:${nodeToReconfigure.nextPort}")
+                .defaultHeader("Content-Type", "application/json")
+                .build()
+
+            val reconfigureNodeResponse : String = client.post()
+                .uri { builder ->
+                    builder.path("/reconfigure")
+                        .queryParam("uuid", nodeToReconfigure.uuid)
+                        .queryParam("salt", nodeToReconfigure.salt)
+                        .queryParam("nextHost", newNextNode.nextHost)
+                        .queryParam("nextPort", newNextNode.nextPort)
+                        .queryParam("X-Game-Timestamp", xGameTimestamp)
+                        .build()
+                }
+                .retrieve()
+                .awaitBody()
+
+            return reconfigureNodeResponse
+
+        }
     }
 
     override fun reconfigure(

@@ -13,5 +13,5 @@ interface UnregisterNodeApiService {
      *         or User error, replace user. (status code 400)
      * @see UnregisterNodeApi#unregisterNode
      */
-    fun unregisterNode(uuid: java.util.UUID?, salt: kotlin.String?): kotlin.String
+    suspend fun unregisterNode(uuid: java.util.UUID?, salt: kotlin.String?): kotlin.String
 }
